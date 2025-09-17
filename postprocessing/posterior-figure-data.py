@@ -19,7 +19,7 @@ def replace_path(path):
     return Path("./postprocessing/figure-data") / path.relative_to(base_path)
 
 
-operators = ["convolution", "identity", "sample"]
+operators = ["convolution", "identity", "sample", "fourier"]
 factors: list[ff.Factor] = [
     ff.Gauss(0, 0.25),
     ff.Laplace(1.0),
@@ -45,7 +45,9 @@ for phi in factors:
             for instance in ["learned", "gibbs"]:
                 instance_path = operator_path / "dps" / algorithm / instance
                 ref = th.load(instance_path / "samples.pth")[:, signals_indices, :, :]
-                for name, statistic in zip(["mean", "variance"], [ref.mean(0), ref.var(0)]):
+                for name, statistic in zip(
+                    ["mean", "variance"], [ref.mean(0), ref.var(0)]
+                ):
                     save_csv(replace_path(instance_path) / f"{name}.csv", statistic)
         for method in model_based:
             instance_path = operator_path / "model-based" / method

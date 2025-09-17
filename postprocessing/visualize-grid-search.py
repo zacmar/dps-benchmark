@@ -25,24 +25,34 @@ factors: list[ff.Factor] = [
     ff.StudentT(3.0),
 ]
 algorithms = ["cdps", "diffpir", "dpnp", "l1", "log", "l2"]
-operators = ["identity", "convolution", "sample"]
+operators = ["identity", "convolution", "sample", "fourier"]
 
 for phi in factors:
     for operator in operators:
         for algorithm in algorithms:
+            load_path = (
+                root
+                / phi.path()
+                / "measurements"
+                / operator
+                / "grid-search"
+                / algorithm
+            )
             if algorithm == "diffpir":
-                load_path = root / phi.path() / "measurements" / operator / 'grid-search' / algorithm
-                grid = th.load(load_path / "grid.pth").cpu()
-                mses = th.load(load_path / "mses.pth").cpu()
+                grid = th.load(load_path / "grid.pth").cpu().view(2,20,2)
+                mses = th.load(load_path / "mses.pth").cpu()[:, 0]
                 argmin = th.unravel_index(mses.argmin(), grid.shape[:2])
                 mses = mses.view(grid.shape[:2])[argmin[0]]
-                print(phi.path(), operator, mses)
                 grid = grid[argmin[0], :, 1]
-                save_path = Path("./postprocessing/figure-data") / phi.path() / 'measurements' / operator / 'grid-search' / algorithm
-                save_csv(save_path, grid, mses)
             else:
-                load_path = root / phi.path() / "measurements" / operator / 'grid-search' / algorithm
                 grid = th.load(load_path / "grid.pth").cpu()
                 mses = th.load(load_path / "mses.pth").cpu()
-                save_path = Path("./postprocessing/figure-data") / phi.path() / 'measurements' / operator / 'grid-search' / algorithm
-                save_csv(save_path, grid, mses)
+            save_path = (
+                Path("./postprocessing/figure-data")
+                / phi.path()
+                / "measurements"
+                / operator
+                / "grid-search"
+                / algorithm
+            )
+            save_csv(save_path, grid, mses)
