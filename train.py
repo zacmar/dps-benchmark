@@ -1,20 +1,14 @@
 import torch as th
-import factor as ff
 import math
 import yaml
-from pathlib import Path
-import os
 from datetime import datetime
-
-import argparse
 
 from core.denoisers import DeepDenoiser
 from core.networks import ConditionedUnet1D
 from torch.utils.tensorboard import SummaryWriter
-
-
-device = th.device("cuda")
-
+import common
+from tqdm import tqdm
+common.init()
 
 def sample_sigma(
     x: th.Tensor, sigma_distribution: str, rng: th.Generator | None = None
@@ -132,10 +126,10 @@ def main(factor_path):
     with open("./configs/train.yaml", "r") as f:
         train_cfg = yaml.safe_load(f)
 
-    denoiser = DeepDenoiser(ConditionedUnet1D(32, (1, 2, 4)).to(device), "eps")
+    denoiser = DeepDenoiser(ConditionedUnet1D(32, (1, 2, 4)).to(common.device), "eps")
 
     training_data, validation_data = [
-        th.load(factor_path / "signals" / split / "s.pth", weights_only=True).to(device)
+        th.load(factor_path / "signals" / split / "s.pth", weights_only=True).to(common.device)
         for split in ["train", "validation"]
     ]
 
@@ -147,10 +141,10 @@ def main(factor_path):
     save_interval = 1000
     eval_every = 100
 
-    for i in range(n_parameter_updates):
+    for i in tqdm(range(n_parameter_updates), desc="Learning"):
         denoiser.net.train()
         batch_indices = th.randperm(
-            training_data.shape[0], dtype=th.int32, device=device
+            training_data.shape[0], dtype=th.int32, device=common.device
         )[:batch_size]
         x = training_data[batch_indices]
         optim.zero_grad()
@@ -163,7 +157,7 @@ def main(factor_path):
             with th.no_grad():
                 denoiser.net.eval()
                 batch_indices = th.randperm(
-                    validation_data.shape[0], dtype=th.int32, device=device
+                    validation_data.shape[0], dtype=th.int32, device=common.device
                 )[:batch_size]
                 x_eval = validation_data[batch_indices]
                 valid_loss = batch_loss(
@@ -182,43 +176,13 @@ def main(factor_path):
 
 
 if __name__ == "__main__":
-    # TODO description
-    parser = argparse.ArgumentParser(
-        description="Train denoisers for signals with jump distributions specified in the factors.\nFor help regarding the parameters of the factors, use `{operator} {factor} -h`."
+    th.manual_seed(0)
+    parser = common.make_parser(
+        blocks=("factor",),
+        description="Train denoisers for signals with jump distributions specified in the factors.\nFor help regarding the parameters of the factors, use `{factor} -h`.",
     )
-    sub = parser.add_subparsers(
-        dest="factor", required=True, help="Name of the jump distribution."
-    )
-
-    p_gauss = sub.add_parser("gauss", help="Gauss factor.")
-    p_gauss.add_argument("var", type=float, help="Variance.", default=0.25)
-    p_gauss.set_defaults(make_factor=lambda arg: ff.Gauss(0, arg.var))
-
-    p_laplace = sub.add_parser("laplace", help="Laplace factor.")
-    p_laplace.add_argument("b", type=float, help="Scale.", default=1.0)
-    p_laplace.set_defaults(make_factor=lambda arg: ff.Laplace(arg.b))
-
-    p_student = sub.add_parser("student", help="Student's T distribution factor.")
-    p_student.add_argument("df", type=float, help="Degrees of freedom.", default=1.0)
-    p_student.set_defaults(make_factor=lambda arg: ff.StudentT(arg.df))
-
-    p_bl = sub.add_parser("bernoulli-laplace", help="Bernoulli-Laplace factor.")
-    p_bl.add_argument(
-        "p",
-        type=float,
-        help='Probability of Bernoulli taking on the value "1". This is (1 - lambda) in the paper!',
-        default=0.1,
-    )
-    p_bl.add_argument(
-        "b", type=float, help="Scale of the Laplace distribution.", default=1.0
-    )
-    p_bl.set_defaults(make_factor=lambda arg: ff.BernoulliLaplace(arg.p, arg.b))
-
     args = parser.parse_args()
     # Just to get the path to the training data; we don't really use the factor
-    factor = args.make_factor(args)
-    base_path = Path(os.environ["EXPERIMENTS_ROOT"]) / "optimality-framework"
-
-    th.manual_seed(0)
-
+    factor = common.build_factor(args)
+    base_path = common.base_path
     main(base_path / factor.path())

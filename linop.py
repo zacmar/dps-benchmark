@@ -1,6 +1,7 @@
 import numpy as np
 import torch as th
 from abc import ABC, abstractmethod
+import math
 
 
 # TODO i think these shapes are useless
@@ -195,6 +196,69 @@ class Fft(LinOp):
 
     def applyT(self, y):
         return th.fft.ifft(y, norm="ortho")
+
+
+class Ifft(LinOp):
+    def __init__(self):
+        self.in_shape = (-1,)
+        self.out_shape = (-1,)
+
+    def apply(self, x):
+        return th.fft.ifft(x, norm="ortho")
+
+    def applyT(self, y):
+        return th.fft.fft(y, norm="ortho")
+
+
+class Rfft(LinOp):
+    def __init__(self, n: int):
+        self.n = int(n)
+        self.m = self.n // 2 + 1
+        self.in_shape = (-1,)
+        self.out_shape = (2 * self.m,)
+
+    def apply(self, x):
+        X = th.fft.rfft(x, n=self.n, norm="ortho")
+        a = X.real.clone()
+        b = X.imag.clone()
+
+        s2 = math.sqrt(2.0)
+        if self.n % 2 == 0:
+            if self.m > 2:
+                a[..., 1:-1] *= s2
+                b[..., 1:-1] *= s2
+            b[..., 0] = 0.0
+            b[..., -1] = 0.0
+        else:
+            if self.m > 1:
+                a[..., 1:] *= s2
+                b[..., 1:] *= s2
+            b[..., 0] = 0.0
+
+        return th.cat((a, b), dim=-1)
+
+    def applyT(self, y):
+        a = y[..., : self.m]
+        b = y[..., self.m :]
+
+        s2 = math.sqrt(2.0)
+        a = a.clone()
+        b = b.clone()
+
+        if self.n % 2 == 0:
+            if self.m > 2:
+                a[..., 1:-1] /= s2
+                b[..., 1:-1] /= s2
+            b[..., 0] = 0.0
+            b[..., -1] = 0.0
+        else:
+            if self.m > 1:
+                a[..., 1:] /= s2
+                b[..., 1:] /= s2
+            b[..., 0] = 0.0
+
+        Z = th.complex(a, b)
+        return th.fft.irfft(Z, n=self.n, norm="ortho")
 
 
 class Ifft(LinOp):
@@ -730,67 +794,6 @@ class ConvGaussianOperator(LinOp):
 
     def __str__(self):
         return f"conv-gaussian-{self.sigma}"
-
-
-# TODO think of good parametrization
-class FourierSampling(LinOp):
-    def __init__(self):
-        pass
-
-
-class FourierSampOperator(LinOp):
-    def __init__(self, n_rows, K=100, seed=42):
-        if n_rows < 4:
-            raise ValueError("n_rows must be >= 4")  # there are 4 fixed low frequencies
-        if n_rows > K // 2 - 3:
-            # indices_hf contains K//2 - 10 indices, and we sample n_rows - 7 of them without replacement.
-            raise ValueError("n_rows must be <= K//2 - 3")
-        # for the __str__ method
-        self.n_rows = n_rows
-
-        # We want to sample n_rows of the DFT matrix (M' in the paper)
-        rng = None if seed is None else th.Generator("cpu").manual_seed(seed)
-        # Fixed low-frequency indices (incl. DC component)
-        sampled_indices = th.tensor([0, 1, 2, 3])
-        # Sample 3 rows from low frequencies
-        if n_rows - len(sampled_indices) >= 3:
-            indices_lf = th.arange(4, 10)
-            sampled_indices_lf = th.sort(
-                indices_lf[th.randperm(len(indices_lf), generator=rng)[:3]]
-            ).values  # Randomly sample 3 indices
-            sampled_indices = th.cat([sampled_indices, sampled_indices_lf])
-        # Sample remaining rows from high frequencies
-        if n_rows - len(sampled_indices) > 0:
-            indices_hf = th.arange(10, K // 2)
-            sampled_indices_hf = th.sort(
-                indices_hf[
-                    th.randperm(len(indices_hf), generator=rng)[
-                        : n_rows - len(sampled_indices)
-                    ]
-                ]
-            ).values  # Randomly sample the remaining indices
-            sampled_indices = th.cat([sampled_indices, sampled_indices_hf])
-
-        # Compute DFT matrix, and split into real/imaginary components
-        F = th.fft.fft(th.eye(K))
-        FR = F.real
-        FI = F.imag
-        # Construct Fourier sampling matrix
-        # Factor 2 because we split the real and imaginary parts. One of the rows is the DC component, which has no imaginary part
-        M = 2 * n_rows - 1
-        H = th.zeros(M, K)
-        H[0] = FR[sampled_indices[0]]  # DC component
-        for i, sampled_idx in zip(range(1, M, 2), sampled_indices[1:]):
-            H[i, :] = FR[sampled_idx, :]
-            H[i + 1, :] = FI[sampled_idx, :]
-
-        super().__init__(H)
-        self.sampled_indices = sampled_indices
-
-    # TODO : reimplement pad_output
-
-    def __str__(self):
-        return f"fourier-samp-{self.n_rows}"
 
 
 class Sample(LinOp):

@@ -34,6 +34,16 @@ def prox_inpainting(
     return rv
 
 
+def prox_fourier(
+    x: th.Tensor, y: th.Tensor, rho: float, indices: th.Tensor
+) -> th.Tensor:
+    N = x.shape[-1]
+    Fx = linop.Rfft(n=N) @ x
+    z = Fx.clone()
+    z[..., indices] = (rho * Fx[..., indices] + y) / (rho + 1)
+    return linop.Rfft(n=N).T @ z
+
+
 def precond_cg_(M_inv, A, b, x0, tol=1e-4, dims=(1, 2, 3)):
     # Basic sanity checks
     assert tol > 0.0
