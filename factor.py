@@ -69,10 +69,14 @@ class BernoulliLaplace(Factor):
 
     def log_prob(self, x: th.Tensor) -> th.Tensor:
         log_lap = self.laplace.log_prob(x)
-        is_zero = (th.abs(x) < 5e-2)
+        is_zero = th.abs(x) < 5e-5
         log_prob = th.empty_like(x)
-        log_prob[~is_zero] = th.log(th.tensor([self.p], device=x.device)) + log_lap[~is_zero]
-        log_prob[is_zero] = th.log(1 - th.tensor([self.p], device=x.device, dtype=x.dtype))
+        log_prob[~is_zero] = (
+            th.log(th.tensor([self.p], device=x.device)) + log_lap[~is_zero]
+        )
+        log_prob[is_zero] = th.log(
+            1 - th.tensor([self.p], device=x.device, dtype=x.dtype)
+        )
         return log_prob
 
     def path(self) -> Path:
@@ -112,7 +116,7 @@ class StudentT(GLMFactor):
 
     def var_map(self, z: th.Tensor) -> th.Tensor:
         return 1 / z
-    
+
     def log_prob(self, x: th.Tensor) -> th.Tensor:
         return self.dist.log_prob(x)
 
