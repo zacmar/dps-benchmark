@@ -13,7 +13,6 @@ def perturb_and_map_tup(
     y = tuple(m + th.sqrt(v) * th.randn_like(m) for m, v in zip(mu, var))
     b = K.T @ (tuple(yy / v for yy, v in zip(y, var)))
 
-    # TODO use early exit again
     class A(LinOp):
         def apply(self, x):
             return K.T @ tuple(kx / v for kx, v in zip(K @ x, var))
@@ -38,17 +37,12 @@ def perturb_and_map(
     def A(x):
         res = K.T @ ((K @ x) / var)
 
-        # TODO: Implement this part smarter
         if tie_break:
             res += th.mean(x, dim=(1, 2), keepdim=True)
 
         return res
 
     b = K.T @ (y / var)
-
-    # Generate the samples
-    # TODO: Implement this part smarter
-    dims = (1,) if mu.dim() == 2 else (1, 2, 3)
     dims = (1, 2)
 
     def Ai(x, i):
@@ -100,5 +94,4 @@ def cholesky_map(
     mu = th.linalg.solve(Kt_sigma_K, Kt_sigma_mu0)
     res = mu + y
     res = th.permute(res, (0, 2, 1))
-
     return res
