@@ -3,13 +3,11 @@ from pathlib import Path
 import os
 import linop
 import factor as ff
+import common
+common.init()
 
 
-root = Path(os.environ["EXPERIMENTS_ROOT"]) / "optimality-framework"
-device = th.device("cuda")
-dtype = th.float64
 alpha = 0.9
-
 factors: list[ff.Factor] = [
     ff.Gauss(0, 0.25),
     ff.Laplace(1.0),
@@ -19,12 +17,11 @@ factors: list[ff.Factor] = [
     ff.StudentT(3.0),
 ]
 
-gauss_kernel = linop.gaussian_kernel_1d(13, 2)[None]
-indices = th.load("indices.pth")
 operators = {
-    "identity": ("Denoising", linop.Id()),
-    "convolution": ("Deconvolution", linop.Conv1d(gauss_kernel.to(device, dtype))),
-    "sample": ("Imputation", linop.Sample(indices)),
+    "identity": ("Denoising", common.operators["identity"]),
+    "convolution": ("Deconvolution", common.operators["convolution"]),
+    "sample": ("Imputation", common.operators["sample"]),
+    "fourier": ("Fourier", common.operators["fourier"])
 }
 
 # Short headers
@@ -66,7 +63,10 @@ def weighted_hpd_threshold(logpi: th.Tensor, w: th.Tensor, alpha: float) -> th.T
     lam = logpi_sorted[b_idx.squeeze(1), k]
     return lam
 
-def hpd_covered(logpi_true: th.Tensor, logpi_samples: th.Tensor, weights: th.Tensor, alpha: float) -> th.Tensor:
+
+def hpd_covered(
+    logpi_true: th.Tensor, logpi_samples: th.Tensor, weights: th.Tensor, alpha: float
+) -> th.Tensor:
     """
     logpi_true   : (b,)   log posterior at truths
     logpi_samples: (b, n) log posterior at samples
@@ -86,19 +86,36 @@ with th.no_grad():
     for opname, (problem_name, A) in operators.items():
         results.setdefault(problem_name, {})
         for phi in factors:
-            base_path = root / phi.path()
-            s_true = th.load(base_path / "signals/test/s.pth").to(device, dtype)
-            y = th.load(base_path / f"measurements/{opname}/m.pth").to(device, dtype)
-            var = th.load(base_path / f"measurements/{opname}/var.pth").to(device, dtype)
+            print(opname, phi.path())
+            base_path = common.base_path / phi.path()
+            s_true = th.load(base_path / "signals/test/s.pth", map_location=common.device).to(common.dtype)
+            y = th.load(base_path / f"measurements/{opname}/m.pth")
+            var = th.load(base_path / f"measurements/{opname}/var.pth", map_location=common.device)
 
             def logp(x: th.Tensor):
-                return - (((A @ x).view(s_true.shape[0], -1, y.shape[2]) - y) ** 2).sum((2,)) / 2 / var + phi.log_prob(D @ x).view(s_true.shape[0], -1, s_true.shape[2]).sum((2))
+                return -(((A @ x).view(s_true.shape[0], -1, y.shape[2]) - y) ** 2).sum(
+                    (2,)
+                ) / 2 / var + phi.log_prob(D @ x).view(
+                    s_true.shape[0], -1, s_true.shape[2]
+                ).sum(
+                    (2)
+                )
 
-            ref_samples = th.load(base_path / f"measurements/{opname}/mmse/posterior_samples.pth").to(device, dtype)[:, :8000].contiguous()
+            ref_samples = (
+                th.load(base_path / f"measurements/{opname}/mmse/posterior_samples.pth")[:, :8000]
+                .contiguous()
+            )
             logpis_signal = logp(s_true).squeeze()
-            logpis_sample = logp(ref_samples.view(-1, 1, ref_samples.shape[-1])).view(*ref_samples.shape[:2])
+            logpis_sample = logp(ref_samples.view(-1, 1, ref_samples.shape[-1])).view(
+                *ref_samples.shape[:2]
+            )
             weights = th.ones_like(logpis_sample)
-            coverage = hpd_covered(logpis_signal, logpis_sample, weights, alpha).float().mean().item()
+            coverage = (
+                hpd_covered(logpis_signal, logpis_sample, weights, alpha)
+                .float()
+                .mean()
+                .item()
+            )
             col_name = factor_header[str(phi.path())]
             results[problem_name].setdefault("Reference", {})
             results[problem_name]["Reference"][col_name] = (
@@ -120,21 +137,45 @@ with th.no_grad():
                     # These are arranged like (n_samples, n_signals, 1, length) which is different
                     # to how we saved the ref signals that are like (n_signals, n_samples, length)
                     # so we have to permute
-                    alg_samples = th.load(alg_base / "samples.pth").permute(1, 0, 2, 3).squeeze().contiguous()
-                    logpis_sample = logp(alg_samples.view(-1, 1, ref_samples.shape[-1])).view(*alg_samples.shape[:2])
-                    weights = th.softmax(logpis_sample, dim=1)
-                    coverage = hpd_covered(logpis_signal, logpis_sample, weights, alpha).float().mean().item()
-                    learned_str, gibbs_str = (
-                        results[problem_name]
-                        .setdefault(alg_disp, {})
-                        .get(col_name, ("", ""))
-                    )
-                    if bench_kind == "learned":
-                        learned_str = f"{coverage:.2f}"
-                    else:
-                        gibbs_str = f"{coverage:.2f}"
-                    results[problem_name][alg_disp][col_name] = (learned_str, gibbs_str)
-            del s_true, y, var, ref_samples, alg_samples, logpis_signal, logpis_sample, weights
+                    p = alg_base / "samples.pth"
+                    if p.exists():
+                        alg_samples = (
+                            th.load(p)
+                            .permute(1, 0, 2, 3)
+                            .squeeze()
+                            .contiguous()
+                        )
+                        logpis_sample = logp(
+                            alg_samples.view(-1, 1, ref_samples.shape[-1])
+                        ).view(*alg_samples.shape[:2])
+                        weights = th.softmax(logpis_sample, dim=1)
+                        coverage = (
+                            hpd_covered(logpis_signal, logpis_sample, weights, alpha)
+                            .float()
+                            .mean()
+                            .item()
+                        )
+                        learned_str, gibbs_str = (
+                            results[problem_name]
+                            .setdefault(alg_disp, {})
+                            .get(col_name, ("", ""))
+                        )
+                        if bench_kind == "learned":
+                            learned_str = f"{coverage:.2f}"
+                        else:
+                            gibbs_str = f"{coverage:.2f}"
+                        results[problem_name][alg_disp][col_name] = (learned_str, gibbs_str)
+
+            del (
+                s_true,
+                y,
+                var,
+                ref_samples,
+                alg_samples,
+                logpis_signal,
+                logpis_sample,
+                weights,
+            )
             th.cuda.empty_cache()
 
 
@@ -160,7 +201,7 @@ def print_table(results):
     )
     print(r"    \midrule")
 
-    problem_order = ["Denoising", "Deconvolution", "Imputation"]
+    problem_order = ["Denoising", "Deconvolution", "Imputation", "Fourier"]
     for pid, problem_name in enumerate(problem_order):
         block = results.get(problem_name, {})
 
