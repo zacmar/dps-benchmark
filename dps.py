@@ -4,7 +4,6 @@ from typing import Callable
 import factor as ff
 import linop
 
-import torch.nn.functional as F
 import math
 import optim
 
@@ -80,6 +79,7 @@ def diffpir(
     prox_step,
     zeta: float = 0.1,
     rho_: float = 0.005,
+    callback: Callable[[th.Tensor], None] = lambda _: None,
 ) -> th.Tensor:
     alphas = 1.0 - betas
     alphas_bar = th.cumprod(alphas, dim=0)
@@ -97,6 +97,7 @@ def diffpir(
         x = th.sqrt(alphas_bar[t - 1]) * x0_hat + th.sqrt(1 - alphas_bar[t - 1]) * (
             math.sqrt(1 - zeta) * eps_hat + math.sqrt(zeta) * z * (t > 1)
         )
+        callback(x)
 
     return x
 
@@ -107,9 +108,9 @@ def cdps(
     betas: th.Tensor,
     A,
     y,
-    mode="autograd",
+    mode="learned",
     zeta_prime=0.07,
-):
+) -> th.Tensor:
     x = th.randn_like(x_init)
     x0 = x.clone()
     alphas = 1.0 - betas
@@ -118,7 +119,7 @@ def cdps(
     ones = x.new_ones((x.shape[0],))
 
     for t in tqdm(range(betas.shape[0] - 1, 0, -1), desc="C-DPS"):
-        if mode == "autograd":
+        if mode == "learned":
             with th.enable_grad():
                 x.requires_grad_(True)
                 x0 = denoiser(
@@ -154,13 +155,23 @@ def cdps(
     return x
 
 
-def dpnp(x_init: th.Tensor, denoiser, A, y, noise_var, betas, K=40, eta_initial: float=1., mode="gibbs"):
+def dpnp(
+    x_init: th.Tensor,
+    denoiser,
+    A,
+    y,
+    noise_var,
+    betas,
+    K=40,
+    eta_initial: float = 1.0,
+    mode="gibbs",
+) -> th.Tensor:
     alphas = 1.0 - betas
     alphas_bar = th.cumprod(alphas, dim=0)
     sigmas = th.sqrt(1 - alphas_bar)
 
     K_initial = K // 5
-    eta_final = 0.15
+    eta_final = 0.1
 
     x = th.randn_like(x_init) * math.sqrt(eta_initial / 4)
     dims = (1, 2)
@@ -174,14 +185,19 @@ def dpnp(x_init: th.Tensor, denoiser, A, y, noise_var, betas, K=40, eta_initial:
         sigma = noise_var**0.5
         n = th.randn_like(y)
         xi = A.T @ (n / sigma) + (1.0 / eta) * u
-        z = optim.cg(prec, xi, th.zeros_like(x_i), dims=dims, tol=tol, max_iter=max_iter)
+        z = optim.cg(
+            prec, xi, th.zeros_like(x_i), dims=dims, tol=tol, max_iter=max_iter
+        )
         sample = mean + z
         return sample
 
     def etas(k):
-        return eta_initial if k < K_initial else (eta_final / eta_initial) ** (
-            (k - K_initial) / (K - K_initial)
-        ) * eta_initial
+        return (
+            eta_initial
+            if k < K_initial
+            else (eta_final / eta_initial) ** ((k - K_initial) / (K - K_initial))
+            * eta_initial
+        )
 
     if mode == "gibbs":
         denoising_sampler = denoiser
@@ -233,7 +249,7 @@ def ddpm(
     alphas_bar = th.cumprod(alphas, dim=0)
     sigmas = th.sqrt(1 - alphas_bar)
 
-    for t in tqdm(range(betas.shape[0] - 1, 0, -1)):
+    for t in tqdm(range(betas.shape[0] - 1, -1, -1)):
         x0 = denoiser(x / th.sqrt(alphas_bar[t]), sigmas[t] / th.sqrt(alphas_bar[t]))
         z = th.randn_like(x)
         eps = th.sqrt(alphas_bar[t]) * x0 - x
